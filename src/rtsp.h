@@ -82,6 +82,7 @@ namespace rtsp_stream {
     uint32_t control_connect_data;  ///< Client-provided token used when connecting the control channel.
 
     bool host_audio;  ///< Whether host audio should be played locally.
+    bool arf_av_sync = false;  ///< Client negotiated timestamped ARF audio packets and a shared video clock.
     std::string unique_id;  ///< Moonlight client unique identifier for this launch request.
     int width;  ///< Frame or display width in pixels.
     int height;  ///< Frame or display height in pixels.
@@ -119,6 +120,12 @@ namespace rtsp_stream {
    * @return Count of active sessions.
    */
   int session_count();
+
+  /** @brief Check whether a certificate owns a running stream.
+   * @param cert Paired client certificate in PEM format.
+   * @return True only while this client's stream is running.
+   */
+  bool has_active_session(std::string_view cert);
 
   /**
    * @brief Terminates all running streaming sessions.

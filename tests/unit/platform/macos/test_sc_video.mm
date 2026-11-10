@@ -1,0 +1,107 @@
+/** @file tests/unit/platform/macos/test_sc_video.mm
+ * @brief Capture lifecycle regression tests using synthetic frames and a fake native stream.
+ */
+#ifdef __APPLE__
+  // test includes
+  #include "../../../tests_common.h"
+
+  // local includes
+  #import "src/platform/macos/sc_video.h"
+
+/** @brief A stream fixture that completes stops without opening any screen or audio device. */
+@interface ArfFakeCaptureStream: NSObject
+/** @brief Number of stop requests made by the capture controller. */
+@property (nonatomic, assign) NSUInteger stops;
+/** @brief Complete a fake stream stop immediately.
+ * @param completion Callback receiving a successful stop result.
+ */
+- (void)stopCaptureWithCompletionHandler:(void (^)(NSError *))completion;
+@end
+
+@implementation ArfFakeCaptureStream
+
+- (void)stopCaptureWithCompletionHandler:(void (^)(NSError *))completion {
+  self.stops++;
+  completion(nil);
+}
+
+@end
+
+namespace {
+  /** @brief Construct a valid in-memory image sample with a configurable capture status.
+   * @param status Native frame status to attach to the sample.
+   * @return Retained synthetic sample, or null on allocation failure.
+   */
+  CMSampleBufferRef sample(SCFrameStatus status) {
+    CVPixelBufferRef pixels = nullptr;
+    if (CVPixelBufferCreate(kCFAllocatorDefault, 8, 8, kCVPixelFormatType_32BGRA, nullptr, &pixels) != kCVReturnSuccess) {
+      return nullptr;
+    }
+    CMVideoFormatDescriptionRef format = nullptr;
+    CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixels, &format);
+    CMSampleTimingInfo timing {CMTimeMake(1, 60), CMTimeMake(1, 1), kCMTimeInvalid};
+    CMSampleBufferRef result = nullptr;
+    CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, pixels, format, &timing, &result);
+    if (format) {
+      CFRelease(format);
+    }
+    CFRelease(pixels);
+    if (result) {
+      CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(result, true);
+      auto metadata = (CFMutableDictionaryRef) CFArrayGetValueAtIndex(attachments, 0);
+      CFDictionarySetValue(metadata, (CFStringRef) SCStreamFrameInfoStatus, (CFNumberRef) @(status));
+    }
+    return result;
+  }
+}  // namespace
+
+TEST(ScreenCaptureKitLifecycleTest, DeliversOnlyCompleteScreenFramesAndStopsAfterRejection) {
+  @autoreleasepool {
+    ArfFakeCaptureStream *stream = [[[ArfFakeCaptureStream alloc] init] autorelease];
+    __block int delivered = 0;
+    SCVideo *capture = [[SCVideo alloc] initWithTestStream:(SCStream *) stream callback:^bool(CMSampleBufferRef) { delivered++; return false; }];
+    CMSampleBufferRef idle = sample(SCFrameStatusIdle), complete = sample(SCFrameStatusComplete);
+    ASSERT_NE(idle, nullptr);
+    ASSERT_NE(complete, nullptr);
+    [capture stream:(SCStream *) stream didOutputSampleBuffer:nullptr ofType:SCStreamOutputTypeScreen];
+    [capture stream:(SCStream *) stream didOutputSampleBuffer:idle ofType:SCStreamOutputTypeScreen];
+    EXPECT_EQ(delivered, 0);
+    [capture stream:(SCStream *) stream didOutputSampleBuffer:complete ofType:SCStreamOutputTypeScreen];
+    EXPECT_EQ(dispatch_semaphore_wait(capture.testCompletion, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)), 0);
+    EXPECT_EQ(delivered, 1);
+    EXPECT_EQ(stream.stops, 1U);
+    EXPECT_FALSE(capture.captureFailed);
+    CFRelease(idle);
+    CFRelease(complete);
+    [capture release];
+  }
+}
+
+TEST(ScreenCaptureKitLifecycleTest, StopsAnIdleStreamOnceWithoutWaitingForAFrame) {
+  @autoreleasepool {
+    ArfFakeCaptureStream *stream = [[[ArfFakeCaptureStream alloc] init] autorelease];
+    SCVideo *capture = [[SCVideo alloc] initWithTestStream:(SCStream *) stream callback:^bool(CMSampleBufferRef) { return true; }];
+    [capture stopCapture];
+    [capture stopCapture];
+    EXPECT_EQ(dispatch_semaphore_wait(capture.testCompletion, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)), 0);
+    EXPECT_EQ(stream.stops, 1U);
+    [capture release];
+  }
+}
+
+TEST(ScreenCaptureKitLifecycleTest, IgnoresRetiredStreamErrorsAndSignalsActiveFailure) {
+  @autoreleasepool {
+    ArfFakeCaptureStream *active = [[[ArfFakeCaptureStream alloc] init] autorelease];
+    ArfFakeCaptureStream *retired = [[[ArfFakeCaptureStream alloc] init] autorelease];
+    SCVideo *capture = [[SCVideo alloc] initWithTestStream:(SCStream *) active callback:^bool(CMSampleBufferRef) { return true; }];
+    NSError *error = [NSError errorWithDomain:@"io.arf.capture.fixture" code:1 userInfo:nil];
+    [capture stream:(SCStream *) retired didStopWithError:error];
+    EXPECT_NE(dispatch_semaphore_wait(capture.testCompletion, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC)), 0);
+    EXPECT_FALSE(capture.captureFailed);
+    [capture stream:(SCStream *) active didStopWithError:error];
+    EXPECT_EQ(dispatch_semaphore_wait(capture.testCompletion, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)), 0);
+    EXPECT_TRUE(capture.captureFailed);
+    [capture release];
+  }
+}
+#endif

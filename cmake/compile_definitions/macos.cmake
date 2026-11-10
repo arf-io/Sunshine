@@ -33,6 +33,8 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${AV_FOUNDATION_LIBRARY}
         ${CORE_AUDIO_LIBRARY}
         ${CORE_MEDIA_LIBRARY}
+        ${SCREEN_CAPTURE_KIT_LIBRARY}
+        ${IMAGE_IO_LIBRARY}
         ${CORE_VIDEO_LIBRARY}
         ${FOUNDATION_LIBRARY}
         ${IOKIT_LIBRARY}
@@ -45,6 +47,9 @@ set(APPLE_ENTITLEMENTS_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/entitlements.pl
 configure_file("${APPLE_PLIST_TEMPLATE}" "${APPLE_PLIST_FILE}" @ONLY)
 
 set(PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/sc_video.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/sc_video.m"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/clipboard.mm"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio.mm"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_img_t.h"

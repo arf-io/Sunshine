@@ -15,6 +15,7 @@
 #include "globals.h"
 #include "logging.h"
 #include "platform/common.h"
+#include "stream.h"
 #include "thread_safe.h"
 #include "utility.h"
 
@@ -24,10 +25,11 @@ namespace audio {
    * @brief Owning pointer for an Opus multistream encoder.
    */
   using opus_t = util::safe_ptr<OpusMSEncoder, opus_multistream_encoder_destroy>;
-  /**
-   * @brief Shared queue carrying captured PCM sample buffers to the encoder thread.
-   */
-  using sample_queue_t = std::shared_ptr<safe::queue_t<std::vector<float>>>;
+
+  /** @brief Interleaved PCM samples paired with the first sample's capture time. */
+  using captured_samples_t = std::pair<std::vector<float>, std::chrono::steady_clock::time_point>;
+  /** @brief Shared queue carrying timestamped PCM to the encoder worker. */
+  using sample_queue_t = std::shared_ptr<safe::queue_t<captured_samples_t>>;
 
   static int start_audio_control(audio_ctx_t &ctx);
   static void stop_audio_control(audio_ctx_t &);
@@ -138,8 +140,9 @@ namespace audio {
     auto frame_size = config.packetDuration * stream.sampleRate / 1000;
     while (auto sample = samples->pop()) {
       buffer_t packet {1400};
+      const auto prefix = stream::session::uses_arf_av_sync(*channel_data) ? 12 : 0;
 
-      int bytes = opus_multistream_encode_float(opus.get(), sample->data(), frame_size, std::begin(packet), (opus_int32) packet.size());
+      int bytes = opus_multistream_encode_float(opus.get(), sample->first.data(), frame_size, std::begin(packet) + prefix, (opus_int32) packet.size() - prefix);
       if (bytes < 0) {
         BOOST_LOG(error) << "Couldn't encode audio: "sv << opus_strerror(bytes);
         packets->stop();
@@ -147,7 +150,14 @@ namespace audio {
         return;
       }
 
-      packet.fake_resize(bytes);
+      if (prefix) {
+        std::copy_n("ARF1", 4, std::begin(packet));
+        auto captured_us = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(sample->second.time_since_epoch()).count());
+        for (int i = 0; i < 8; ++i) {
+          packet[4 + i] = static_cast<std::uint8_t>(captured_us >> (56 - i * 8));
+        }
+      }
+      packet.fake_resize(bytes + prefix);
       packets->raise(channel_data, std::move(packet));
     }
   }
@@ -270,7 +280,8 @@ namespace audio {
           return;
       }
 
-      samples->raise(std::move(sample_buffer));
+      const auto timestamp = mic->sample_timestamp().value_or(std::chrono::steady_clock::now() - std::chrono::milliseconds(config.packetDuration));
+      samples->raise(captured_samples_t {std::move(sample_buffer), timestamp});
     }
   }
 

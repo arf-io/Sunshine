@@ -16,6 +16,7 @@
 // local includes
 #include <src/crypto.h>
 #include <src/nvhttp.h>
+#include <src/utility.h>
 
 namespace {
   using namespace std::chrono_literals;
@@ -25,6 +26,13 @@ namespace {
    * @brief Run real HTTPS callbacks against an isolated loopback listener.
    */
   struct HttpsHandlerLifetimeTest: BaseTest {
+    /** @brief Select whether this fixture requests and reports client certificates.
+     * @return False for callback lifetime tests.
+     */
+    virtual bool certificate_mode() const {
+      return false;
+    }
+
     /**
      * @brief Create credentials and start the production HTTPS accept handler.
      */
@@ -36,7 +44,7 @@ namespace {
       std::ofstream {certificate_file} << credentials.x509;
       std::ofstream {private_key_file} << credentials.pkey;
 
-      server = nvhttp::test_support::make_https_server(certificate_file.string(), private_key_file.string(), handler_scope);
+      server = nvhttp::test_support::make_https_server(certificate_file.string(), private_key_file.string(), handler_scope, certificate_mode());
       server->io_service = std::make_shared<boost::asio::io_context>();
       server->config.address = "127.0.0.1";
       server->config.port = 0;
@@ -96,6 +104,59 @@ namespace {
     std::filesystem::path certificate_file;  ///< Generated server certificate.
     std::filesystem::path private_key_file;  ///< Generated server private key.
   };
+
+  /** @brief Request client certificates so simultaneous TLS identities can be tested. */
+  struct HttpsPeerIdentityTest: HttpsHandlerLifetimeTest {
+    /** @brief Enable the isolated peer-identity endpoint.
+     * @return True for peer-identity tests.
+     */
+    bool certificate_mode() const override {
+      return true;
+    }
+  };
+
+  TEST_F(HttpsPeerIdentityTest, InterleavedHandshakesKeepRequestCertificateOwnership) {
+    const auto first = crypto::gen_creds("First desktop client", 2048);
+    const auto second = crypto::gen_creds("Second desktop client", 2048);
+    boost::asio::io_context client_io;
+    boost::asio::ssl::context first_context {boost::asio::ssl::context::tls_client};
+    boost::asio::ssl::context second_context {boost::asio::ssl::context::tls_client};
+    first_context.set_verify_mode(boost::asio::ssl::verify_none);
+    second_context.set_verify_mode(boost::asio::ssl::verify_none);
+    first_context.use_certificate_chain(boost::asio::buffer(first.x509));
+    first_context.use_private_key(boost::asio::buffer(first.pkey), boost::asio::ssl::context::pem);
+    second_context.use_certificate_chain(boost::asio::buffer(second.x509));
+    second_context.use_private_key(boost::asio::buffer(second.pkey), boost::asio::ssl::context::pem);
+    boost::asio::ssl::stream<tcp::socket> first_socket {client_io, first_context};
+    boost::asio::ssl::stream<tcp::socket> second_socket {client_io, second_context};
+    std::jthread serving([this]() {
+      server->io_service->run();
+    });
+    auto stop = util::fail_guard([this]() {
+      server->stop();
+      server->io_service->stop();
+    });
+    first_socket.lowest_layer().connect({boost::asio::ip::address_v4::loopback(), port});
+    first_socket.handshake(boost::asio::ssl::stream_base::client);
+    second_socket.lowest_layer().connect({boost::asio::ip::address_v4::loopback(), port});
+    second_socket.handshake(boost::asio::ssl::stream_base::client);
+    const auto fetch = [](auto &socket) {
+      const std::string request = "GET /test-peer HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+      boost::asio::write(socket, boost::asio::buffer(request));
+      boost::asio::streambuf response;
+      boost::system::error_code ec;
+      boost::asio::read(socket, response, boost::asio::transfer_all(), ec);
+      // Complete the peer's close-notify before asking the single-threaded server
+      // to service the other connection; Sunshine shuts TLS down synchronously.
+      socket.shutdown(ec);
+      socket.lowest_layer().close(ec);
+      const std::string wire {boost::asio::buffers_begin(response.data()), boost::asio::buffers_end(response.data())};
+      const auto header_end = wire.find("\r\n\r\n");
+      return header_end == std::string::npos ? std::string {} : wire.substr(header_end + 4);
+    };
+    EXPECT_EQ(fetch(first_socket), first.x509);
+    EXPECT_EQ(fetch(second_socket), second.x509);
+  }
 
   /**
    * @brief Canceling a pending accept holds the server guard through its error callback.

@@ -833,6 +833,13 @@ namespace platf {
      */
     virtual capture_e sample(std::vector<float> &frame_buffer) = 0;
 
+    /** @brief Report the capture time of the first sample in the last delivered frame.
+     * @return Native capture timestamp mapped to the monotonic clock, when available.
+     */
+    virtual std::optional<std::chrono::steady_clock::time_point> sample_timestamp() const {
+      return std::nullopt;
+    }
+
     virtual ~mic_t() = default;
   };
 

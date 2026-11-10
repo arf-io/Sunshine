@@ -6,14 +6,18 @@
 // test includes
 #include "../tests_common.h"
 
+// lib includes
+#include <opus/opus_multistream.h>
+
 // local includes
 #include <src/audio.h>
 #include <src/rtsp.h>
 #include <src/stream.h>
 
 namespace audio {
-  void encodeThread(std::shared_ptr<safe::queue_t<std::vector<float>>> samples, config_t config, stream::session_t *channel_data);
-}
+  using captured_samples_t = std::pair<std::vector<float>, std::chrono::steady_clock::time_point>;
+  void encodeThread(std::shared_ptr<safe::queue_t<captured_samples_t>> samples, config_t config, stream::session_t *channel_data);
+}  // namespace audio
 
 using namespace audio;
 
@@ -40,7 +44,7 @@ TEST(AudioPacketSessionTest, EncoderPreservesTheReceivingSession) {
   auto session = stream::session::alloc(stream_config, launch_session);
   ASSERT_NE(session.get(), nullptr);
   config_t config {.packetDuration = 5, .channels = 2, .mask = 0x3};
-  auto samples = std::make_shared<safe::queue_t<std::vector<float>>>();
+  auto samples = std::make_shared<safe::queue_t<captured_samples_t>>();
   auto packets = mail::man->queue<packet_t>(mail::audio_packets);
   std::jthread worker([&samples, &config, &session] {
     audio::encodeThread(samples, config, session.get());
@@ -48,11 +52,46 @@ TEST(AudioPacketSessionTest, EncoderPreservesTheReceivingSession) {
   auto stop_worker = util::fail_guard([&samples] {
     samples->stop();
   });
-  ASSERT_TRUE(samples->raise(std::vector<float>(480, 0.0F)));
+  ASSERT_TRUE(samples->raise(captured_samples_t {std::vector<float>(480, 0.0F), std::chrono::steady_clock::now()}));
   auto packet = packets->pop(2s);
   ASSERT_TRUE(packet);
   EXPECT_EQ(packet->first, session.get());
   EXPECT_GT(packet->second.size(), 0U);
+}
+
+TEST(AudioPacketSessionTest, NegotiatedCaptureTimestampWrapsAValidOpusPacket) {
+  stream::config_t stream_config {};
+  rtsp_stream::launch_session_t launch_session {};
+  launch_session.gcm_key.resize(16);
+  launch_session.iv.resize(16);
+  launch_session.arf_av_sync = true;
+  auto session = stream::session::alloc(stream_config, launch_session);
+  ASSERT_NE(session.get(), nullptr);
+  config_t config {.packetDuration = 5, .channels = 2, .mask = 0x3};
+  auto samples = std::make_shared<safe::queue_t<captured_samples_t>>();
+  auto packets = mail::man->queue<packet_t>(mail::audio_packets);
+  std::jthread worker([&]() {
+    audio::encodeThread(samples, config, session.get());
+  });
+  auto stop_worker = util::fail_guard([&]() {
+    samples->stop();
+  });
+  constexpr uint64_t captured_us = 0x0000000102030405ULL;
+  const std::chrono::steady_clock::time_point captured {std::chrono::microseconds(captured_us)};
+  ASSERT_TRUE(samples->raise(captured_samples_t {std::vector<float>(480, 0.0F), captured}));
+  auto packet = packets->pop(2s);
+  ASSERT_TRUE(packet);
+  ASSERT_GT(packet->second.size(), 12U);
+  const std::array<uint8_t, 12> golden {'A', 'R', 'F', '1', 0, 0, 0, 1, 2, 3, 4, 5};
+  EXPECT_TRUE(std::equal(golden.begin(), golden.end(), std::begin(packet->second)));
+  const unsigned char mapping[] {0, 1};
+  int status = OPUS_OK;
+  OpusMSDecoder *decoder = opus_multistream_decoder_create(48000, 2, 1, 1, mapping, &status);
+  ASSERT_EQ(status, OPUS_OK);
+  ASSERT_NE(decoder, nullptr);
+  std::array<float, 480> pcm;
+  EXPECT_EQ(opus_multistream_decode_float(decoder, std::begin(packet->second) + 12, packet->second.size() - 12, pcm.data(), 240, 0), 240);
+  opus_multistream_decoder_destroy(decoder);
 }
 
 struct AudioTest: PlatformTestSuite, testing::WithParamInterface<std::tuple<std::basic_string_view<char>, config_t>> {

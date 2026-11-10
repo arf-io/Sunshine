@@ -3,10 +3,13 @@
  * @brief Definitions for microphone capture on macOS.
  */
 // local includes
+#include "src/capture_clock.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/platform/macos/av_audio.h"
+
+#import <CoreAudio/HostTime.h>
 
 namespace platf {
   using namespace std::literals;
@@ -16,6 +19,16 @@ namespace platf {
    */
   struct av_mic_t: public mic_t {
     AVAudio *av_audio_capture {};  ///< AV audio capture.
+    uint32_t sample_rate = 48000;  ///< Negotiated PCM sample rate.
+    uint32_t channels = 2;  ///< Negotiated channel count.
+    std::optional<std::chrono::steady_clock::time_point> captured;  ///< First-sample timestamp from the last frame.
+
+    /** @brief Return the native first-sample capture timestamp.
+     * @return Last frame's monotonic timestamp when native timing was available.
+     */
+    std::optional<std::chrono::steady_clock::time_point> sample_timestamp() const override {
+      return captured;
+    }
 
     ~av_mic_t() override {
       [av_audio_capture release];
@@ -32,10 +45,23 @@ namespace platf {
       uint8_t *dst = reinterpret_cast<uint8_t *>(sample_in.data());
 
       uint32_t remaining = neededBytes;
+      captured.reset();
 
       while (remaining > 0) {
+        const auto sequence = av_audio_capture->captureSequence.load(std::memory_order_acquire);
+        const auto endHostNs = av_audio_capture->captureEndHostNs.load(std::memory_order_relaxed);
         uint32_t avail = 0;
         void *tail = TPCircularBufferTail(&av_audio_capture->audioSampleBuffer, &avail);
+        if (remaining == neededBytes && avail && !(sequence & 1) && sequence == av_audio_capture->captureSequence.load(std::memory_order_acquire) && endHostNs) {
+          const auto queuedNs = uint64_t(avail) * 1000000000ULL / (channels * sizeof(float) * sample_rate);
+          if (endHostNs >= queuedNs) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto hostNow = AudioConvertHostTimeToNanos(AudioGetCurrentHostTime());
+            const auto firstHostNs = endHostNs - queuedNs;
+            const auto age = (static_cast<double>(hostNow) - static_cast<double>(firstHostNs)) / 1000000000.0;
+            captured = capture_clock::from_age(age, now);
+          }
+        }
 
         if (avail == 0) {
           // Using 5 second timeout to prevent indefinite hanging
@@ -94,6 +120,8 @@ namespace platf {
      */
     std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous_audio, bool host_audio_enabled) override {
       auto mic = std::make_unique<av_mic_t>();
+      mic->sample_rate = sample_rate;
+      mic->channels = channels;
       mic->av_audio_capture = [[AVAudio alloc] init];
 
       // Set the host audio enabled flag from the stream configuration

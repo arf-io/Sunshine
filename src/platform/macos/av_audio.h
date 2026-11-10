@@ -10,6 +10,7 @@
  * while microphone capture focuses on input from physical or virtual microphone devices.
  */
 #pragma once
+#include <atomic>
 
 // platform includes
 #import <AudioToolbox/AudioToolbox.h>
@@ -114,6 +115,8 @@ typedef struct {
 @public
   TPCircularBuffer audioSampleBuffer;  ///< Shared circular buffer for both audio capture paths
   dispatch_semaphore_t audioSemaphore;  ///< Real-time safe semaphore for signaling audio sample availability
+  std::atomic<uint64_t> captureSequence;  ///< Seqlock covering producer timestamps and the PCM ring.
+  std::atomic<uint64_t> captureEndHostNs;  ///< Native host-clock end time of the most recently produced samples.
 @private
   // System-wide audio tap components (Core Audio)
   AudioObjectID tapObjectID;  ///< Core Audio tap object identifier for system audio capture

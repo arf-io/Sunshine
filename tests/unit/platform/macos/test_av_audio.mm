@@ -9,10 +9,14 @@
   // test includes
   #include "../../../tests_common.h"
 
+  // standard includes
+  #include <array>
+
   // platform includes
   #import <AVFoundation/AVFoundation.h>
   #import <CoreAudio/CATapDescription.h>
   #import <CoreAudio/CoreAudio.h>
+  #import <CoreAudio/HostTime.h>
   #import <Foundation/Foundation.h>
   #import <objc/runtime.h>
 
@@ -43,6 +47,40 @@ namespace {
   }
 }  // namespace
 
+TEST(AVAudioCaptureClockTest, PublishesProducedSampleTimeAndClearsUnknownTiming) {
+  @autoreleasepool {
+    AVAudio *audio = [[AVAudio alloc] init];
+    [audio initializeAudioBuffer:2];
+    std::array<float, 480> samples {};
+    AudioBufferList input {};
+    input.mNumberBuffers = 1;
+    input.mBuffers[0] = AudioBuffer {2, sizeof(samples), samples.data()};
+    AVAudioIOProcData context {};
+    context.avAudio = audio;
+    context.clientRequestedChannels = 2;
+    context.clientRequestedSampleRate = 48000;
+    context.clientRequestedFrameSize = 240;
+    context.aggregateDeviceChannels = 2;
+    context.aggregateDeviceSampleRate = 48000;
+    AudioTimeStamp time {};
+    time.mFlags = kAudioTimeStampHostTimeValid;
+    time.mHostTime = AudioGetCurrentHostTime();
+    const auto expected = AudioConvertHostTimeToNanos(time.mHostTime) + 5000000ULL;
+    EXPECT_EQ(audio->captureSequence.load(), 0U);
+    EXPECT_EQ(platf::systemAudioIOProc(0, &time, &input, &time, nullptr, nullptr, &context), noErr);
+    EXPECT_EQ(audio->captureEndHostNs.load(), expected);
+    EXPECT_EQ(audio->captureSequence.load(), 2U);
+    uint32_t available = 0;
+    TPCircularBufferTail(&audio->audioSampleBuffer, &available);
+    EXPECT_EQ(available, sizeof(samples));
+    time.mFlags = kAudioTimeStampSampleTimeValid;
+    EXPECT_EQ(platf::systemAudioIOProc(0, &time, &input, &time, nullptr, nullptr, &context), noErr);
+    EXPECT_EQ(audio->captureEndHostNs.load(), 0U);
+    EXPECT_EQ(audio->captureSequence.load(), 4U);
+    [audio release];
+  }
+}
+
 /**
  * @brief Test parameters for processSystemAudioIOProc tests.
  * Contains various audio configuration parameters to test different scenarios.
@@ -59,7 +97,10 @@ struct ProcessSystemAudioIOProcTestParams {
  * @brief Test suite for AVAudio class functionality.
  * Parameterized test class for testing Core Audio system tap functionality.
  */
-class AVAudioTest: public PlatformTestSuite, public ::testing::WithParamInterface<ProcessSystemAudioIOProcTestParams> {};
+// These cases use synthetic buffers, nil devices, and permission stubs. Requiring
+// screen-recording access through PlatformTestSuite prevents unrelated audio unit
+// tests from running in headless build sessions.
+class AVAudioTest: public BaseTest, public ::testing::WithParamInterface<ProcessSystemAudioIOProcTestParams> {};
 
 /**
  * @brief Test that findMicrophone handles nil input gracefully.
