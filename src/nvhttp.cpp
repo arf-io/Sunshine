@@ -13,6 +13,7 @@
 #include <format>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 // lib includes
@@ -24,6 +25,7 @@
 #include <Simple-Web-Server/server_http.hpp>
 
 // local includes
+#include "clipboard.h"
 #include "config.h"
 #include "display_device.h"
 #include "file_handler.h"
@@ -35,6 +37,7 @@
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
+#include "stream.h"
 #include "string_hash.h"
 #include "system_tray.h"
 #include "utility.h"
@@ -85,7 +88,33 @@ namespace nvhttp {
     std::function<int(SSL *)> verify;  ///< Callback that validates a client's TLS certificate after handshake.
     std::function<void(std::shared_ptr<Response>, std::shared_ptr<Request>)> on_verify_failed;  ///< Handler used to return the pairing challenge when client verification fails.
 
+    /** @brief Retrieve the certificate belonging to this request's TLS connection.
+     * @param request Parsed HTTPS request.
+     * @return PEM certificate, or an empty string for an expired connection.
+     */
+    std::string peer_certificate(const std::shared_ptr<Request> &request) {
+      const auto endpoint = request->remote_endpoint();
+      const auto key = endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
+      const auto found = connections.find(key);
+      if (found == connections.end()) {
+        return {};
+      }
+      const auto connection = found->second.lock();
+      if (!connection) {
+        return {};
+      }
+      crypto::x509_t certificate {
+#if OPENSSL_VERSION_MAJOR >= 3
+        SSL_get1_peer_certificate(connection->socket->native_handle())
+#else
+        SSL_get_peer_certificate(connection->socket->native_handle())
+#endif
+      };
+      return certificate ? crypto::pem(certificate) : std::string {};
+    }
+
   protected:
+    std::unordered_map<std::string, std::weak_ptr<Connection>> connections;  ///< Live TLS connections, indexed by their unique remote endpoint; accessed on the server thread.
     boost::asio::ssl::context context {boost::asio::ssl::context::tls_server};  ///< TLS server context configured with Sunshine's certificate and protocol policy.
 
     /**
@@ -114,6 +143,15 @@ namespace nvhttp {
         if (verify && !verify(session->connection->socket->native_handle())) {
           this->write(session, on_verify_failed);
         } else {
+          for (auto it = connections.begin(); it != connections.end();) {
+            if (it->second.expired()) {
+              it = connections.erase(it);
+            } else {
+              ++it;
+            }
+          }
+          const auto endpoint = session->request->remote_endpoint();
+          connections[endpoint.address().to_string() + ":" + std::to_string(endpoint.port())] = session->connection;
           this->read(session);
         }
       } else if (this->on_error) {
@@ -210,8 +248,6 @@ namespace nvhttp {
   std::atomic<uint32_t> session_id_counter;  ///< Monotonic counter used to allocate GameStream session IDs.
 
   // Set by TLS verify callback, read by launch/resume handler (single-threaded HTTPS server)
-  std::string last_verified_client_cert;  ///< Last client certificate accepted by the TLS verify callback.  // NOSONAR(cpp:S5421): intentionally mutable global
-  std::string last_verified_client_name;  ///< Friendly name of last client certificate accepted by the TLS verify callback. // NOSONAR(cpp:S5421): intentionally mutable global
 
   /**
    * @brief Case-insensitive map used for HTTP headers and query parameters.
@@ -371,6 +407,25 @@ namespace nvhttp {
     return is_client_enabled(certificate) ? nullptr : "Client certificate identity is not enabled";
   }
 
+  /** @brief Recheck pairing and revocation for an already established TLS connection.
+   * @param cert Certificate belonging to the current request, never a global last-handshake value.
+   * @return True only while the exact paired identity remains enabled.
+   */
+  bool authorize_request_certificate(std::string_view cert) {
+    auto certificate = crypto::x509(cert);
+    if (!certificate) {
+      return false;
+    }
+    std::lock_guard lock {client_auth_mutex()};
+    return verify_client_certificate(certificate.get()) == nullptr;
+  }
+
+  /** @brief Resolve a paired certificate's enabled state and display name.
+   * @param cert_pem Certificate serialized as PEM.
+   * @return Stored status and name, with legacy defaults for an unknown record.
+   */
+  std::pair<bool, std::string> get_client_status(const std::string_view cert_pem);
+
   /**
    * @brief Load state from its backing store.
    */
@@ -482,9 +537,10 @@ namespace nvhttp {
    *
    * @param host_audio Host audio.
    * @param args Arguments forwarded to the callable or parser.
+   * @param client_cert Certificate from this request's TLS connection.
    * @return Constructed launch session object.
    */
-  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, const args_t &args) {
+  std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, const args_t &args, const std::string &client_cert) {
     auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
     launch_session->id = ++session_id_counter;
@@ -528,8 +584,15 @@ namespace nvhttp {
       launch_session->rtsp_iv_counter = 0;
     }
     launch_session->rtsp_url_scheme = launch_session->rtsp_cipher ? "rtspenc://"s : "rtsp://"s;
-    launch_session->client_cert = last_verified_client_cert;
-    launch_session->client_name = last_verified_client_name;
+    launch_session->client_cert = client_cert;
+#ifdef __APPLE__
+    const auto sync = args.find("arfavsync");
+    launch_session->arf_av_sync = sync != args.end() && sync->second == "1";
+#endif
+    {
+      std::lock_guard lock {client_auth_mutex()};
+      launch_session->client_name = get_client_status(client_cert).second;
+    }
 
     // Generate the unique identifiers for this connection that we will send later during RTSP handshake
     std::array<unsigned char, 8> raw_payload;
@@ -1365,7 +1428,7 @@ namespace nvhttp {
    * @param response HTTP response object to populate.
    * @param request HTTP request data from the client.
    */
-  void launch(bool &host_audio, resp_https_t response, req_https_t request) {
+  void launch(bool &host_audio, resp_https_t response, req_https_t request, const std::string &client_cert) {
     print_req<SunshineHTTPS>(request);
 
     pt::ptree tree;
@@ -1412,7 +1475,7 @@ namespace nvhttp {
     }
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
-    auto launch_session = make_launch_session(host_audio, args);
+    auto launch_session = make_launch_session(host_audio, args, client_cert);
 
     if (rtsp_stream::session_count() == 0) {
       // The display should be restored in case something fails as there are no other sessions.
@@ -1469,6 +1532,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.gamesession", 1);
+    tree.put("root.arfAvSync", launch_session->arf_av_sync ? 1 : 0);
 
     rtsp_stream::launch_session_raise(launch_session);
 
@@ -1483,7 +1547,7 @@ namespace nvhttp {
    * @param response HTTP response object to populate.
    * @param request HTTP request data from the client.
    */
-  void resume(bool &host_audio, resp_https_t response, req_https_t request) {
+  void resume(bool &host_audio, resp_https_t response, req_https_t request, const std::string &client_cert) {
     print_req<SunshineHTTPS>(request);
 
     pt::ptree tree;
@@ -1527,7 +1591,7 @@ namespace nvhttp {
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
-    const auto launch_session = make_launch_session(host_audio, args);
+    const auto launch_session = make_launch_session(host_audio, args, client_cert);
 
     if (no_active_sessions) {
       // We want to prepare display only if there are no active sessions at
@@ -1570,6 +1634,7 @@ namespace nvhttp {
       )
     );
     tree.put("root.resume", 1);
+    tree.put("root.arfAvSync", launch_session->arf_av_sync ? 1 : 0);
 
     rtsp_stream::launch_session_raise(launch_session);
   }
@@ -1636,7 +1701,6 @@ namespace nvhttp {
    * @return Pair of (bool enabled, string name) where "enabled" is True when the client certificate belongs to an
              enabled device and "name" is the friendly client name set during pairing.
    */
-  std::pair<bool, std::string> get_client_status(const std::string_view cert_pem);
 
   void start() {
     platf::set_thread_name("nvhttp");
@@ -1661,6 +1725,8 @@ namespace nvhttp {
     bool host_audio {};
 
     https_server_t https_server {config::nvhttp.cert, config::nvhttp.pkey};
+    // Bound parsed content before any route allocates or decodes a clipboard snapshot.
+    https_server.config.max_request_streambuf_size = desktop_clipboard::max_wire_bytes + 16384;
     http_server_t http_server;
 
     // Verify certificates after establishing connection
@@ -1703,8 +1769,6 @@ namespace nvhttp {
         return verified;
       }
 
-      last_verified_client_cert = pem;
-      last_verified_client_name = client_name;
       verified = 1;
 
       return verified;
@@ -1732,13 +1796,67 @@ namespace nvhttp {
     };
     https_server.resource["^/applist$"]["GET"] = applist;
     https_server.resource["^/appasset$"]["GET"] = appasset;
-    https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {
-      launch(host_audio, resp, req);
+    https_server.resource["^/launch$"]["GET"] = [&host_audio, &https_server](auto resp, auto req) {
+      const auto cert = https_server.peer_certificate(req);
+      if (!authorize_request_certificate(cert)) {
+        https_server.on_verify_failed(resp, req);
+        return;
+      }
+      launch(host_audio, resp, req, cert);
     };
-    https_server.resource["^/resume$"]["GET"] = [&host_audio](auto resp, auto req) {
-      resume(host_audio, resp, req);
+    https_server.resource["^/resume$"]["GET"] = [&host_audio, &https_server](auto resp, auto req) {
+      const auto cert = https_server.peer_certificate(req);
+      if (!authorize_request_certificate(cert)) {
+        https_server.on_verify_failed(resp, req);
+        return;
+      }
+      resume(host_audio, resp, req, cert);
     };
     https_server.resource["^/cancel$"]["GET"] = cancel;
+
+#ifdef __APPLE__
+    // This endpoint intentionally does not call print_req: clipboard contents must never enter logs.
+    https_server.resource["^/arf/clipboard$"]["POST"] = [&https_server](auto response, auto request) {
+      using code = SimpleWeb::StatusCode;
+      const SimpleWeb::CaseInsensitiveMultimap headers {{"Content-Type", "application/json"}, {"Cache-Control", "no-store"}};
+      const auto cert = https_server.peer_certificate(request);
+      const bool authorized = authorize_request_certificate(cert);
+      if (!config::input.clipboard || !authorized || !rtsp_stream::has_active_session(cert)) {
+        response->write(code::client_error_forbidden, "{}", headers);
+        return;
+      }
+      if (request->content.size() > desktop_clipboard::max_wire_bytes) {
+        response->write(code::client_error_payload_too_large, "{}", headers);
+        return;
+      }
+      try {
+        const nlohmann::json message = nlohmann::json::parse(request->content.string());
+        if (!message.is_object() || message.value("version", 0) != 1) {
+          response->write(code::client_error_bad_request, "{}", headers);
+          return;
+        }
+        bool conflict = false;
+        if (message.contains("write")) {
+          if (!message.contains("expected") || !message["expected"].is_string() || !desktop_clipboard::valid_items(message["write"])) {
+            response->write(code::client_error_bad_request, "{}", headers);
+            return;
+          }
+          conflict = !desktop_clipboard::write(message["write"], message["expected"].get<std::string>());
+        }
+        const auto items = desktop_clipboard::read();
+        const auto hash = items.is_null() ? std::string {} : desktop_clipboard::digest(items);
+        nlohmann::json reply {{"version", 1}, {"blocked", items.is_null()}, {"digest", hash}};
+        if (!items.is_null() && message.value("known", std::string {}) == hash) {
+          reply["unchanged"] = true;
+        } else {
+          reply["items"] = items;
+        }
+        response->write(conflict ? code::client_error_conflict : code::success_ok, reply.dump(), headers);
+      } catch (const nlohmann::json::exception &) {
+        response->write(code::client_error_bad_request, "{}", headers);
+      }
+    };
+#endif
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);
@@ -1851,7 +1969,8 @@ namespace nvhttp {
     std::unique_ptr<SimpleWeb::ServerBase<SunshineHTTPS>> make_https_server(
       const std::string &certificate_file,
       const std::string &private_key_file,
-      std::shared_ptr<SimpleWeb::ScopeRunner> &handler_scope
+      std::shared_ptr<SimpleWeb::ScopeRunner> &handler_scope,
+      bool expose_peer_endpoint
     ) {
       /**
        * @brief Expose the production HTTPS handler scope to lifetime regression tests.
@@ -1863,6 +1982,15 @@ namespace nvhttp {
       };
 
       auto server = std::make_unique<test_https_server_t>(certificate_file, private_key_file);
+      if (expose_peer_endpoint) {
+        server->verify = [](SSL *) {
+          return 1;
+        };
+        server->resource["^/test-peer$"]["GET"] = [backend = server.get()](auto response, auto request) {
+          response->close_connection_after_response = true;
+          response->write(backend->peer_certificate(request));
+        };
+      }
       handler_scope = server->handler_runner;
       return server;
     }
@@ -1904,13 +2032,7 @@ namespace nvhttp {
     }
 
     bool authorize_client_certificate(const std::string_view cert) {
-      auto certificate = crypto::x509(cert);
-      if (!certificate) {
-        return false;
-      }
-
-      std::lock_guard lock {client_auth_mutex()};
-      return verify_client_certificate(certificate.get()) == nullptr;
+      return authorize_request_certificate(cert);
     }
 
     bool complete_pairing(const std::string_view pairing_id, const bool success) {

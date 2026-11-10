@@ -312,6 +312,7 @@ namespace config {
     bool virtualhid_randomize_mac;  ///< Randomize the libvirtualhid virtual controller MAC address.
 
     bool keyboard;  ///< Enable keyboard input from clients.
+    bool clipboard;  ///< Allow clipboard sharing with an active paired desktop client.
     bool key_rightalt_to_key_win;  ///< Map the client Right Alt key to the Windows key.
     bool mouse;  ///< Enable mouse input from clients.
     bool controller;  ///< Enable controller input from clients.

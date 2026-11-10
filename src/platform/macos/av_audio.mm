@@ -23,6 +23,7 @@
 // platform includes
 #import <AudioToolbox/AudioConverter.h>
 #import <CoreAudio/CATapDescription.h>
+#import <CoreAudio/HostTime.h>
 
 namespace platf {
   using namespace std::literals;
@@ -128,6 +129,7 @@ namespace platf {
     UInt32 clientChannels = procData->clientRequestedChannels;
     UInt32 clientFrameSize = procData->clientRequestedFrameSize;
     AVAudio *avAudio = procData->avAudio;
+    avAudio->captureSequence.fetch_add(1, std::memory_order_acq_rel);
 
     // Always ensure we write to buffer and signal, even if input is empty/invalid
     bool didWriteData = false;
@@ -172,17 +174,14 @@ namespace platf {
           if (converterStatus == noErr && outputFrameCount > 0) {
             // AudioConverter did all the work: sample rate + channels + optimal frame count
             UInt32 actualOutputBytes = outputFrameCount * clientChannels * sizeof(float);
-            TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, procData->conversionBuffer, actualOutputBytes);
-            didWriteData = true;
+            didWriteData = TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, procData->conversionBuffer, actualOutputBytes);
           } else {
             // Fallback: write original data
-            TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, inputBuffer.mData, inputBuffer.mDataByteSize);
-            didWriteData = true;
+            didWriteData = TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, inputBuffer.mData, inputBuffer.mDataByteSize);
           }
         } else {
           // No conversion needed - direct passthrough
-          TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, inputBuffer.mData, inputBuffer.mDataByteSize);
-          didWriteData = true;
+          didWriteData = TPCircularBufferProduceBytes(&avAudio->audioSampleBuffer, inputBuffer.mData, inputBuffer.mDataByteSize);
         }
       }
     }
@@ -212,6 +211,14 @@ namespace platf {
       }
     }
 
+    uint64_t endHostNs = 0;
+    if (didWriteData && inInputTime && (inInputTime->mFlags & kAudioTimeStampHostTimeValid) && inInputData && inInputData->mNumberBuffers && procData->aggregateDeviceChannels && procData->aggregateDeviceSampleRate) {
+      const auto inputFrames = inInputData->mBuffers[0].mDataByteSize / (procData->aggregateDeviceChannels * sizeof(float));
+      endHostNs = AudioConvertHostTimeToNanos(inInputTime->mHostTime) + inputFrames * 1000000000ULL / procData->aggregateDeviceSampleRate;
+    }
+    avAudio->captureEndHostNs.store(endHostNs, std::memory_order_relaxed);
+    avAudio->captureSequence.fetch_add(1, std::memory_order_release);
+
     // Signal new data arrival - using real-time safe C-based semaphore
     // instead of Objective-C NSCondition to meet real-time audio constraints
     dispatch_semaphore_signal(avAudio->audioSemaphore);
@@ -221,6 +228,18 @@ namespace platf {
 }  // namespace platf
 
 @implementation AVAudio
+
+/** @brief Initialize native timing counters before either capture backend starts.
+ * @return Initialized audio capture controller.
+ */
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    captureSequence.store(0, std::memory_order_relaxed);
+    captureEndHostNs.store(0, std::memory_order_relaxed);
+  }
+  return self;
+}
 
 + (NSArray<AVCaptureDevice *> *)microphones {
   using namespace std::literals;

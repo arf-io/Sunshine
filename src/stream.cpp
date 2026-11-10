@@ -502,6 +502,7 @@ namespace stream {
    */
   struct session_t {
     config_t config;  ///< Stream or encoder configuration captured for the worker.
+    bool arf_av_sync = false;  ///< Whether this peer negotiated capture-time audio metadata.
 
     safe::mail_t mail;  ///< Mailbox used to distribute packets and lifecycle events.
 
@@ -1810,7 +1811,8 @@ namespace stream {
             frame_is_dupe = true;
           }
           using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;
-          uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
+          const auto epoch = session->arf_av_sync ? std::chrono::steady_clock::time_point {} : video_epoch;
+          uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - epoch).count();
 
           // set FEC info now that we know for sure what our percentage will be for this frame
           for (auto x = 0; x < shards.size(); ++x) {
@@ -2277,6 +2279,10 @@ namespace stream {
       return session.client_cert;
     }
 
+    bool uses_arf_av_sync(session_t &session) {
+      return session.arf_av_sync;
+    }
+
     /**
      * @brief Stop the active streaming session and prevent new packets from being queued.
      */
@@ -2398,6 +2404,7 @@ namespace stream {
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       session->launch_session_id = launch_session.id;
       session->client_cert = launch_session.client_cert;
+      session->arf_av_sync = launch_session.arf_av_sync;
       session->input_session_id = launch_session.client_cert.empty() ? launch_session.unique_id : launch_session.client_cert;
 
       session->config = config;

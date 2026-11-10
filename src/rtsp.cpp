@@ -590,6 +590,20 @@ namespace rtsp_stream {
       return (int) _session_slots->size();
     }
 
+    /** @brief Authorize clipboard access for an actively streaming certificate.
+     * @param cert Paired certificate to locate.
+     * @return True for a running stream owned by this certificate.
+     */
+    bool has_active_session(std::string_view cert) {
+      auto lg = _session_slots.lock();
+      for (const auto &slot : *_session_slots) {
+        if (stream::session::client_cert(*slot) == cert && stream::session::state(*slot) == stream::session::state_e::RUNNING) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     safe::event_t<std::shared_ptr<launch_session_t>> launch_event;  ///< Launch event.
 
     /**
@@ -710,6 +724,10 @@ namespace rtsp_stream {
   void terminate_sessions() {
     server.clear(true);
     input::terminate_gamepads();
+  }
+
+  bool has_active_session(std::string_view cert) {
+    return server.has_active_session(cert);
   }
 
   /**

@@ -882,6 +882,7 @@ namespace config {
     true,  // virtualhid_randomize_mac
 
     true,  // keyboard enabled
+    false,  // clipboard sharing requires explicit opt-in
     false,  // key_rightalt_to_key_win
     true,  // mouse enabled
     true,  // controller enabled
@@ -1880,6 +1881,7 @@ namespace config {
 
     bool_f(vars, "mouse", input.mouse);
     bool_f(vars, "keyboard", input.keyboard);
+    bool_f(vars, "clipboard", input.clipboard);
     bool_f(vars, "controller", input.controller);
 
     bool_f(vars, "always_send_scancodes", input.always_send_scancodes);

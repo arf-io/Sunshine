@@ -7,11 +7,13 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <vector>
 
 // local includes
+#include "src/capture_clock.h"
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
@@ -20,6 +22,7 @@
 #include "src/platform/macos/av_video.h"
 #include "src/platform/macos/misc.h"
 #include "src/platform/macos/nv12_zero_device.h"
+#include "src/platform/macos/sc_video.h"
 
 // Avoid conflict between AVFoundation and libavutil both defining AVMediaType
 /**
@@ -93,7 +96,9 @@ namespace platf {
     }
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+      auto callback_mutex = std::make_shared<std::mutex>();
       auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+        std::lock_guard lock {*callback_mutex};
         auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
         auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
 
@@ -104,6 +109,9 @@ namespace platf {
           return false;
         }
         auto av_img = std::static_pointer_cast<av_img_t>(img_out);
+        const auto now = std::chrono::steady_clock::now();
+        const auto native_age = CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
+        img_out->frame_timestamp = capture_clock::from_age(CMTimeGetSeconds(native_age), now);
 
         auto old_data_retainer = std::make_shared<temp_retain_av_img_t>(
           av_img->sample_buffer,
@@ -131,7 +139,25 @@ namespace platf {
         return true;
       }];
 
-      // FIXME: We should time out if an image isn't returned for a while
+      // ScreenCaptureKit may emit no complete frame on an idle desktop. Continue
+      // checking shutdown/display-switch events without racing the sample callback.
+      if (@available(macOS 12.3, *)) {
+        if ([av_capture isKindOfClass:[SCVideo class]]) {
+          while (dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC))) {
+            bool running;
+            {
+              std::lock_guard lock {*callback_mutex};
+              running = push_captured_image_cb(nullptr, false);
+            }
+            if (!running) {
+              [(SCVideo *) av_capture stopCapture];
+              dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+              break;
+            }
+          }
+          return [(SCVideo *) av_capture captureFailed] ? capture_e::reinit : capture_e::ok;
+        }
+      }
       dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
 
       return capture_e::ok;
@@ -302,7 +328,17 @@ namespace platf {
     BOOST_LOG(debug) << "Active desktop bounds: "sv << display->env_offset_x << 'x' << display->env_offset_y << ' '
                      << display->env_logical_width << 'x' << display->env_logical_height;
 
-    display->av_capture = [[AVVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+    if (@available(macOS 12.3, *)) {
+      if (config::video.capture != "avfoundation") {
+        display->av_capture = [[SCVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+        if (display->av_capture) {
+          BOOST_LOG(info) << "Using ScreenCaptureKit with a bounded capture queue"sv;
+        }
+      }
+    }
+    if (!display->av_capture) {
+      display->av_capture = [[AVVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+    }
 
     if (!display->av_capture) {
       BOOST_LOG(error) << "Video setup failed."sv;

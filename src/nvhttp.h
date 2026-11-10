@@ -398,12 +398,14 @@ namespace nvhttp {
      * @param certificate_file Path to the server certificate PEM file.
      * @param private_key_file Path to the matching private key PEM file.
      * @param handler_scope Receives the scope runner that prevents destruction during callbacks.
+     * @param expose_peer_endpoint Request client certificates and expose their connection identity in an isolated test endpoint.
      * @return HTTPS server ready for test endpoint configuration.
      */
     std::unique_ptr<SimpleWeb::ServerBase<SunshineHTTPS>> make_https_server(
       const std::string &certificate_file,
       const std::string &private_key_file,
-      std::shared_ptr<SimpleWeb::ScopeRunner> &handler_scope
+      std::shared_ptr<SimpleWeb::ScopeRunner> &handler_scope,
+      bool expose_peer_endpoint = false
     );
 
     /**

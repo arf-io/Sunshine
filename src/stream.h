@@ -15,6 +15,10 @@
 #include "crypto.h"
 #include "video.h"
 
+namespace rtsp_stream {
+  struct launch_session_t;
+}
+
 namespace stream {
   constexpr auto VIDEO_STREAM_PORT = 9;  ///< GameStream base-port offset used for the video UDP stream.
   constexpr auto CONTROL_PORT = 10;  ///< GameStream base-port offset used for the control channel.
@@ -94,5 +98,10 @@ namespace stream {
      * @return PEM certificate associated with the session's client.
      */
     const std::string &client_cert(session_t &session);
+    /** @brief Check whether a stream negotiated timestamped audio.
+     * @param session Owning stream.
+     * @return True for the explicitly negotiated ARF media-clock extension.
+     */
+    bool uses_arf_av_sync(session_t &session);
   }  // namespace session
 }  // namespace stream
