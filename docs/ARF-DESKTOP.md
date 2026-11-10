@@ -42,3 +42,7 @@ Moonlight follows upstream qmake6/make instructions after git submodule update -
 ## Rollback
 
 Stop ARF Sunshine, unload its user LaunchAgent, and open the original Sunshine.app. Pre-install configuration is saved privately under /Users/hedon/arf-sunshine/backups/20261109-171727/config; restore it only with the server stopped and after preserving any later changes. Disable the two new client options to retain stock clipboard and timing behavior. The existing VNC connections and access were retained throughout deployment.
+
+## Desktop cursor defaults
+
+Moonlight now defaults showlocalcursor=true. In remote desktop mouse mode this shows an immediate local pointer; the Input Settings checkbox can disable it and Ctrl+Alt+Shift+C remains a session override. Sunshine macOS defaults macos_capture_cursor=disabled for both ScreenCaptureKit and AVFoundation. The Advanced checkbox can restore capture after a server restart. This does not transmit remote cursor shape or hotspot metadata: the local arrow stays an arrow over remote text fields or resize handles. Relative/game mouse mode keeps SDL relative cursor handling. Other host platforms are unaffected.

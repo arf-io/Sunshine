@@ -41,6 +41,8 @@ struct CaptureSession {
  * @brief Frame height property.
  */
 @property (nonatomic, assign) int frameHeight;
+/** @brief Include the remote cursor in captured video; off by default. */
+@property (nonatomic, assign) BOOL cursorVisible;
 
 /**
  * @brief Objective-C block invoked for each captured sample buffer.

@@ -6,6 +6,16 @@
 #import "av_video.h"
 
 @implementation AVVideo
+@synthesize cursorVisible = _cursorVisible;
+
+- (void)setCursorVisible:(BOOL)visible {
+  _cursorVisible = visible;
+  for (AVCaptureInput *input in self.session.inputs) {
+    if ([input isKindOfClass:[AVCaptureScreenInput class]]) {
+      ((AVCaptureScreenInput *) input).capturesCursor = visible;
+    }
+  }
+}
 
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate {
   self = [super init];
@@ -30,6 +40,7 @@
 
   AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
   [screenInput setMinFrameDuration:self.minFrameDuration];
+  screenInput.capturesCursor = self.cursorVisible;
 
   if ([self.session canAddInput:screenInput]) {
     [self.session addInput:screenInput];

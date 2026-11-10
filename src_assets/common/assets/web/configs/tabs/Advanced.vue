@@ -96,6 +96,13 @@ const config = ref(props.config)
               default="false"
     ></Checkbox>
 
+    <Checkbox v-if="platform === 'macos'"
+              id="macos_capture_cursor"
+              locale-prefix="config"
+              v-model="config.macos_capture_cursor"
+              default="false"
+    ></Checkbox>
+
     <!-- Encoder -->
     <div class="mb-3">
       <label for="encoder" class="form-label">{{ $t('config.encoder') }}</label>

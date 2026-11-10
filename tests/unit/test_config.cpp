@@ -63,6 +63,11 @@ TEST(ConfigDefaultsTest, UsesAutomaticGamepadSelection) {
   EXPECT_EQ(config::input.gamepad, "auto");
 }
 
+/** @brief Remote cursor capture defaults off for local desktop pointers. */
+TEST(ConfigDefaultsTest, HidesMacosCursorFromCapturedVideo) {
+  EXPECT_FALSE(config::video.macos_capture_cursor);
+}
+
 TEST(ConfigDefaultsTest, TreatsFp16SdrCapturesAsLinear) {
   EXPECT_FALSE(config::video.fp16_sdr_gamma_encoded);
 }
