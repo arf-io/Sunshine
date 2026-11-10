@@ -92,7 +92,7 @@ The application repositories are GPL-3.0. The current libvirtualhid library and 
 | P2 | Negotiated shared-clock A/V mode if needed | Flash/click offset measurements and 30-minute drift run |
 | P3 | PNG/rich text, broader OS/layout/display coverage | Explicit format and OS matrix; file transfer separately scoped |
 
-Completed: GitHub forks verified, source downloaded, relevant submodules inspected, real host/SDK inventory collected, Linux qmake configuration succeeded. The Linux baseline build result is recorded separately in this report after completion. No macOS host binary has been built or installed, no Sunshine/Moonlight pairing or streaming session has been measured, and no feature implementation or full compatibility certification is claimed.
+Completed: GitHub forks verified, source downloaded, relevant submodules inspected, real host/SDK inventory collected, Linux qmake configuration succeeded. The unmodified Linux Moonlight baseline built successfully with `qmake6` and `make -j2`; an offscreen `--version` smoke check exited 0 and reported `Moonlight 6.2.0`. The initial missing nested transport submodules and SDL2_ttf dependency were resolved before the successful build. Binary: `/home/hedon/.cache/arf-build/moonlight-evaluation/app/moonlight`; build log: `/home/hedon/.cache/arf-build/moonlight-evaluation/build.log`. This validates compilation and startup argument handling, not GPU rendering or a live stream. No macOS host binary has been built or installed, no Sunshine/Moonlight pairing or streaming session has been measured, and no feature implementation or full compatibility certification is claimed.
 
 ## References
 
