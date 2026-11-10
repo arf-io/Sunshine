@@ -41,6 +41,9 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${USER_NOTIFICATIONS_LIBRARY}
         ${VIDEO_TOOLBOX_LIBRARY})
 
+set(SUNSHINE_MACOS_BUNDLE_IDENTIFIER "io.arf.sunshine.desktop" CACHE STRING "macOS identity for the ARF desktop fork")
+set(SUNSHINE_MACOS_DISPLAY_NAME "ARF Sunshine" CACHE STRING "macOS application name for the ARF desktop fork")
+
 set(APPLE_PLIST_TEMPLATE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/Info.plist.in")
 set(APPLE_PLIST_FILE "${CMAKE_BINARY_DIR}/Info.plist")
 set(APPLE_ENTITLEMENTS_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/entitlements.plist")
