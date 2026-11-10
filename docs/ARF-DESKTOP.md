@@ -46,3 +46,5 @@ Stop ARF Sunshine, unload its user LaunchAgent, and open the original Sunshine.a
 ## Desktop cursor defaults
 
 Moonlight now defaults showlocalcursor=true. In remote desktop mouse mode this shows an immediate local pointer; the Input Settings checkbox can disable it and Ctrl+Alt+Shift+C remains a session override. Sunshine macOS defaults macos_capture_cursor=disabled for both ScreenCaptureKit and AVFoundation. The Advanced checkbox can restore capture after a server restart. This does not transmit remote cursor shape or hotspot metadata: the local arrow stays an arrow over remote text fields or resize handles. Relative/game mouse mode keeps SDL relative cursor handling. Other host platforms are unaffected.
+
+The installed ARF app and future macOS fork builds use the distinct bundle identity io.arf.sunshine.desktop and display name ARF Sunshine. This avoids relaunching the original app and keeps its privacy grants separate. Enable Screen Recording and Accessibility for the exact ARF app after switching identities. The GUI LaunchAgent executes the ARF binary directly.
