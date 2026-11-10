@@ -72,16 +72,7 @@
   _stopping = NO;
   self.captureFailed = NO;
   SCContentFilter *filter = [[[SCContentFilter alloc] initWithDisplay:_display excludingWindows:@[]] autorelease];
-  SCStreamConfiguration *config = [[[SCStreamConfiguration alloc] init] autorelease];
-  config.width = self.frameWidth;
-  config.height = self.frameHeight;
-  config.pixelFormat = self.pixelFormat;
-  config.minimumFrameInterval = self.minFrameDuration;
-  config.queueDepth = 3;
-  config.showsCursor = YES;
-  if (@available(macOS 13.0, *)) {
-    config.capturesAudio = NO;  // Core Audio retains ownership of device selection and host mute policy.
-  }
+  SCStreamConfiguration *config = [self streamConfiguration];
   _stream = [[SCStream alloc] initWithFilter:filter configuration:config delegate:self];
   NSError *error = nil;
   if (![_stream addStreamOutput:self type:SCStreamOutputTypeScreen sampleHandlerQueue:_queue error:&error]) {
@@ -98,6 +89,20 @@
     }
   }];
   return _finished;
+}
+
+- (SCStreamConfiguration *)streamConfiguration {
+  SCStreamConfiguration *config = [[[SCStreamConfiguration alloc] init] autorelease];
+  config.width = self.frameWidth;
+  config.height = self.frameHeight;
+  config.pixelFormat = self.pixelFormat;
+  config.minimumFrameInterval = self.minFrameDuration;
+  config.queueDepth = 3;
+  config.showsCursor = self.cursorVisible;
+  if (@available(macOS 13.0, *)) {
+    config.capturesAudio = NO;  // Core Audio retains ownership of device selection and host mute policy.
+  }
+  return config;
 }
 
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {

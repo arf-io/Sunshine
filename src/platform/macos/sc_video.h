@@ -13,6 +13,10 @@ API_AVAILABLE(macos(12.3))
 @property (nonatomic, assign) BOOL captureFailed;
 /** @brief Stop an idle stream and signal its capture loop after callbacks drain. */
 - (void)stopCapture;
+/** @brief Build a bounded native configuration honoring the selected cursor policy.
+ * @return Autoreleased configuration for the next capture stream.
+ */
+- (SCStreamConfiguration *)streamConfiguration;
 #ifdef SUNSHINE_TESTS
 /** @brief Attach an isolated fake stream without requesting screen capture.
  * @param stream Fake stream implementing stopCaptureWithCompletionHandler.

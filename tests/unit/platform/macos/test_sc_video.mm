@@ -27,6 +27,63 @@
 
 @end
 
+/** @brief Fake legacy input that records cursor policy without opening a display. */
+@interface ArfCursorScreenInput: NSObject
+/** @brief Last cursor capture policy applied by AVVideo. */
+@property (nonatomic, assign) BOOL capturesCursor;
+@end
+@implementation ArfCursorScreenInput
+
+- (BOOL)isKindOfClass:(Class)type {
+  return type == [AVCaptureScreenInput class] || [super isKindOfClass:type];
+}
+
+@end
+
+/** @brief Fake legacy session supplying only in-memory capture inputs. */
+@interface ArfCursorSession: NSObject
+/** @brief Inputs to inspect when changing cursor policy. */
+@property (nonatomic, retain) NSArray *inputs;
+@end
+@implementation ArfCursorSession
+
+- (void)stopRunning {
+}
+
+- (void)dealloc {
+  [_inputs release];
+  [super dealloc];
+}
+
+@end
+
+/** @brief Both native capture implementations honor the same opt-in cursor policy. */
+TEST(ScreenCaptureKitLifecycleTest, CursorCaptureDefaultsOffAndCanBeRestored) {
+  @autoreleasepool {
+    SCVideo *capture = [[SCVideo alloc] init];
+    capture.frameWidth = 1920;
+    capture.frameHeight = 1200;
+    capture.minFrameDuration = CMTimeMake(1, 60);
+    EXPECT_FALSE(capture.streamConfiguration.showsCursor);
+    capture.cursorVisible = YES;
+    EXPECT_TRUE(capture.streamConfiguration.showsCursor);
+    EXPECT_EQ(capture.streamConfiguration.queueDepth, 3);
+    [capture release];
+
+    AVVideo *legacy = [[AVVideo alloc] init];
+    ArfCursorScreenInput *input = [[[ArfCursorScreenInput alloc] init] autorelease];
+    ArfCursorSession *session = [[[ArfCursorSession alloc] init] autorelease];
+    session.inputs = @[input, [[[NSObject alloc] init] autorelease]];
+    legacy.session = (AVCaptureSession *) session;
+    EXPECT_FALSE(legacy.cursorVisible);
+    legacy.cursorVisible = YES;
+    EXPECT_TRUE(input.capturesCursor);
+    legacy.cursorVisible = NO;
+    EXPECT_FALSE(input.capturesCursor);
+    [legacy release];
+  }
+}
+
 namespace {
   /** @brief Construct a valid in-memory image sample with a configurable capture status.
    * @param status Native frame status to attach to the sample.

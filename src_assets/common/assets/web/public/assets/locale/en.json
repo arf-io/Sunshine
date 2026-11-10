@@ -108,6 +108,8 @@
     "working_dir_desc": "The working directory that should be passed to the process. For example, some applications use the working directory to search for configuration files. If not set, Sunshine will default to the parent directory of the command"
   },
   "config": {
+    "macos_capture_cursor": "Include the remote cursor in video",
+    "macos_capture_cursor_desc": "Off by default for an immediate local pointer. Enable local cursor display in your client. Turn this on to see remote pointer shapes; disable the local pointer to avoid duplicates. Restart Sunshine to apply.",
     "adapter_name": "Adapter Name",
     "adapter_name_desc_linux_1": "Manually specify a GPU to use for capture.",
     "adapter_name_desc_linux_2": "to find all devices capable of VAAPI",

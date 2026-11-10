@@ -345,6 +345,7 @@ namespace platf {
       return nullptr;
     }
 
+    display->av_capture.cursorVisible = config::video.macos_capture_cursor;
     display->width = display->av_capture.frameWidth;
     display->height = display->av_capture.frameHeight;
 
